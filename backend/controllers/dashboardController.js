@@ -1,80 +1,83 @@
 const Income = require("../models/Income");
 const Expense = require("../models/Expense");
-const {isValidObjectId, Types} = require("mongoose");
+const { Types } = require("mongoose");
 
-// Dashboard Data
+// GET /dashboard/
 exports.getDashboardData = async (req, res) => {
-    try {
-        const userId = req.user._id;
-        const userObjectId = new Types.ObjectId(String(userId));
+  try {
+    const userId = req.user.id; // or req.user._id depending on your middleware
+    const userObjectId = new Types.ObjectId(userId);
 
-        // Fetch total income and expenses
-         const totalIncome = await Income.aggregate([
-            { $match: { user: userObjectId } },
-            { $group: { _id: null, total: { $sum: "$amount" } } },
-        ]);  
-        
-        console.log("Total Income", {totalIncome, userId: isValidObjectId(userId)});
+    // Total Income
+    const totalIncomeAgg = await Income.aggregate([
+      { $match: { userId: userObjectId } },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]);
+    const totalIncome = totalIncomeAgg[0]?.total || 0;
 
-        const totalExpenses = await Expense.aggregate([
-            { $match: { user: userObjectId } },
-            { $group: { _id: null, total: { $sum: "$amount" } } },
-        ]);
+    // Total Expense
+    const totalExpenseAgg = await Expense.aggregate([
+      { $match: { userId: userObjectId } },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]);
+    const totalExpenses = totalExpenseAgg[0]?.total || 0;
 
-        // Get income transactions for the last 60 days
-        const last60DaysIncomeTransactions = await Income.find({
-            userId,
-            date: { $gte: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000) },
-        }).sort({ date: -1 });
+    // Total Balance
+    const totalBalance = totalIncome - totalExpenses;
 
-        // Get total income for last 60 days
-        const incomeLast60Days = last60DaysIncomeTransactions.reduce(
-            (sum, transaction) => sum + transaction.amount, 0);
+    // Get last 5 transactions for recentTransactions (both income & expenses)
+    const lastIncome = await Income.find({ userId })
+      .sort({ date: -1 })
+      .limit(5);
 
-        // Get expense transactions for the last 30 days
-        const last30DaysExpenseTransactions = await Expense.find({
-            userId,
-            date: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
-        }).sort({ date: -1 });  
+    const lastExpenses = await Expense.find({ userId })
+      .sort({ date: -1 })
+      .limit(5);
 
-        // Get total expenses for last 30 days
-        const expensesLast30Days = last30DaysExpenseTransactions.reduce(
-            (sum, transaction) => sum + transaction.amount, 0); 
+    const recentTransactions = [
+      ...lastIncome.map((i) => ({ ...i.toObject(), type: "income" })),
+      ...lastExpenses.map((e) => ({ ...e.toObject(), type: "expense" })),
+    ].sort((a, b) => new Date(b.date) - new Date(a.date)) // most recent first
+     .slice(0, 5);
 
-        // Fetch last 5 transactions (both income and expenses)
-        const lastTransactions = [
-           ...(await Income.find({ userId }).sort({ date: -1 }).limit(5)).map(
-            (txn) => ({
-                ...txn.toObject(),
-                type: "income",
-             })
-           ),
-           ...(await Expense.find({ userId }).sort({ date: -1 }).limit(5)).map(
-            (txn) => ({
-                ...txn.toObject(),
-                type: "expense",
-            })
-           ),
-        ].sort((a, b) => b.date - a.date); 
+    // Optional: last 30 days expenses & 60 days income
+    const last30DaysExpenses = await Expense.find({
+      userId,
+      date: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+    });
 
-        // Final response
-        res.json({
-            totalBalance:
-                (totalIncome[0] ?.total || 0) - (totalExpenses[0] ?.total || 0),
-            totalIncome: totalIncome[0] ?.total || 0,
-            totalExpenses: totalExpenses[0] ?.total || 0,
-            last30DaysExpenses:{
-                total: expensesLast30Days,
-                transactions: last30DaysExpenseTransactions,
-            },
-            last60DaysIncome :{
-                total: incomeLast60Days,
-                transactions: last60DaysIncomeTransactions,
-            },
-            recentTransactions: lastTransactions,
-        });
-    } catch (error) {
-        console.error("Error fetching dashboard data:", error);
-        res.status(500).json({ message: "Server error" });  
-            }
-    }
+    const last60DaysIncome = await Income.find({
+      userId,
+      date: { $gte: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000) },
+    });
+
+    const sumLast30DaysExpenses = last30DaysExpenses.reduce(
+      (sum, e) => sum + e.amount,
+      0
+    );
+
+    const sumLast60DaysIncome = last60DaysIncome.reduce(
+      (sum, i) => sum + i.amount,
+      0
+    );
+
+    // Send response
+    res.json({
+      totalIncome,
+      totalExpenses,
+      totalBalance,
+      last30DaysExpenses: {
+        total: sumLast30DaysExpenses,
+        transactions: last30DaysExpenses,
+      },
+      last60DaysIncome: {
+        total: sumLast60DaysIncome,
+        transactions: last60DaysIncome,
+      },
+      recentTransactions,
+    });
+  } catch (err) {
+    console.error("Error fetching dashboard data:", err);
+    res.status(500).json({ message: "Server error fetching dashboard data" });
+  }
+};
